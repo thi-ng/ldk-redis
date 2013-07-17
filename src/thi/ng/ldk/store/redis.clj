@@ -82,7 +82,7 @@
         (when-let [s (get-indexed conn "subj" sh)]
           (if p
             (when-let [p (get-indexed conn "pred" ph)]
-              (when-let [objects (get-set conn (str "spo" sh ph))]
+              (when-let [objects (into #{} (get-set conn (str "spo" sh ph)))]
                 (if o
                   (when (objects oh) [s p (get-indexed conn "obj" oh)])
                   (triples-sp conn s p objects))))
