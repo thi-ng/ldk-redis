@@ -96,7 +96,7 @@
           (if p
             (when pi
               (if o
-                (when (rexec conn (red/sismember (str "spo" sh ph) oh))
+                (when (pos? (rexec conn (red/sismember (str "spo" sh ph) oh)))
                   [si pi oi])
                 (when-let [preds (seq (get-set conn (str "spo" sh ph)))]
                   (triples-sp conn si pi preds))))
