@@ -9,7 +9,13 @@
 (defmacro rexec [conn & body] `(red/wcar ~conn ~@body))
 
 (defmacro get-indexed
-  [conn idx x] `(as-node (rexec ~conn (red/hget ~idx ~x))))
+  ([conn idx x] `(as-node (rexec ~conn (red/hget ~idx ~x))))
+  ([conn s p o]
+     `(map as-node
+           (rexec ~conn
+                  (red/hget "subj" ~s)
+                  (red/hget "pred" ~p)
+                  (red/hget "obj" ~o)))))
 
 (defmacro get-many [conn idx coll] `(rexec ~conn (apply red/hmget ~idx ~coll)))
 
@@ -31,18 +37,6 @@
 (defn clear-store
   [conn]
   (rexec conn (red/flushdb)))
-
-(defn add*
-  [conn s p o]
-  (let [[sh ph oh :as t] (index-triple conn s p o)]
-    (rexec conn
-           (red/sadd (str "sp" sh) ph)
-           (red/sadd (str "po" ph) oh)
-           (red/sadd (str "op" oh) ph)
-           (red/sadd (str "spo" sh ph) oh)
-           (red/sadd (str "pos" ph oh) sh)
-           (red/sadd (str "ops" oh ph) sh))
-    t))
 
 (defn triples-sp
   [conn s p coll]
@@ -69,49 +63,65 @@
 (defrecord RedisStore [conn]
   api/PModel
   (add-statement [this s p o]
-    (add* conn s p o) this)
+    (let [[sh ph oh] (index-triple conn s p o)]
+      (rexec conn
+             (red/sadd (str "sp" sh) ph)
+             (red/sadd (str "po" ph) oh)
+             (red/sadd (str "op" oh) ph)
+             (red/sadd (str "spo" sh ph) oh)
+             (red/sadd (str "pos" ph oh) sh)
+             (red/sadd (str "ops" oh ph) sh))
+      this))
   (subject? [this x]
     (get-indexed conn "subj" (*hashimpl* x)))
   (predicate? [this x]
     (get-indexed conn "pred" (*hashimpl* x)))
   (object? [this x]
     (get-indexed conn "obj" (*hashimpl* x)))
-  (select [this s p o]
-    (let [[sh ph oh] (map *hashimpl* [s p o])]
+  (add-prefix [this prefix uri]
+    (rexec conn (red/hset "prefixes" prefix uri)) this)
+  (add-prefix [this prefix-map]
+    (rexec conn (apply red/hmset "prefixes" (flatten prefix-map)))
+    this)
+  (prefix-map [this]
+    (apply hash-map (rexec conn (red/hgetall "prefixes"))))
+  (select [this]
+    (api/select this nil nil nil))
+  (select
+    [this s p o]
+    (let [[sh ph oh] (map *hashimpl* [s p o])
+          [si pi oi] (get-indexed conn sh ph oh)]
       (if s
-        (when-let [s (get-indexed conn "subj" sh)]
+        (when si
           (if p
-            (when-let [p (get-indexed conn "pred" ph)]
-              (when-let [objects (into #{} (get-set conn (str "spo" sh ph)))]
-                (if o
-                  (when (objects oh) [s p (get-indexed conn "obj" oh)])
-                  (triples-sp conn s p objects))))
+            (when pi
+              (if o
+                (when (rexec conn (red/sismember (str "spo" sh ph) oh))
+                  [si pi oi])
+                (triples-sp conn si pi (into #{} (get-set conn (str "spo" sh ph))))))
             (let [preds (get-set conn (str "sp" sh))]
               (if o
-                (when-let [o (get-indexed conn "obj" oh)]
+                (when oi
                   (mapcat
-                   (fn [[p objects]] (if (some #(= oh %) objects) [[s (as-node p) o]]))
+                   (fn [[p objects]] (if (some #(= oh %) objects) [[si (as-node p) oi]]))
                    (zipmap
                     (get-many conn "pred" preds)
                     (map #(get-set conn (str "spo" sh %)) preds))))
                 (reduce-triples conn triples-sp s sh "spo" "pred" preds)))))
         (if p
-          (when-let [p (get-indexed conn "pred" ph)]
+          (when pi
             (if o
               (when-let [subj (get-set conn (str "pos" ph oh))]
-                (triples-po conn p (get-indexed conn "obj" oh) subj))
-              (reduce-triples conn triples-po p ph "pos" "obj" (get-set conn (str "po" ph)))))
+                (triples-po conn pi oi subj))
+              (reduce-triples conn triples-po pi ph "pos" "obj" (get-set conn (str "po" ph)))))
           (if o
             (when-let [preds (get-set conn (str "op" oh))]
-              (reduce-triples conn triples-op (get-indexed conn "obj" oh) oh "ops" "pred" preds))
+              (reduce-triples conn triples-op oi oh "ops" "pred" preds))
             (mapcat
              (fn [[sh s]]
                (reduce-triples
-                conn triples-sp
-                (get-indexed conn "subj" sh) sh
-                "spo" "pred"
-                (get-set conn (str "sp" sh))))
+                conn triples-sp (as-node s) sh "spo" "pred" (get-set conn (str "sp" sh))))
              (partition 2 (rexec conn (red/hgetall "subj"))))))))))
 
 (defn make-store
-  [conn] (RedisStore. conn))
+  [& {:as opts}] (RedisStore. (merge redis-conn {:spec opts})))
