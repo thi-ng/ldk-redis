@@ -53,12 +53,12 @@
   (let [o (as-node o) p (as-node p)]
     (map (fn [s] [(as-node s) p o]) (get-many conn "subj" coll))))
 
-(defn reduce-triples
+(defn triples*
   [conn f base-val base-hash inner-idx coll-idx coll]
   (mapcat
-   (fn [[c inner]] (f conn base-val c inner))
-   (zipmap (get-many conn coll-idx coll)
-           (map #(get-set conn (str inner-idx base-hash %)) coll))))
+   (fn [c inner] (f conn base-val c inner))
+   (get-many conn coll-idx coll)
+   (map #(get-set conn (str inner-idx base-hash %)) coll)))
 
 (defrecord RedisStore [conn]
   api/PModel
@@ -98,30 +98,30 @@
               (if o
                 (when (rexec conn (red/sismember (str "spo" sh ph) oh))
                   [si pi oi])
-                (triples-sp conn si pi (into #{} (get-set conn (str "spo" sh ph))))))
+                (when-let [preds (seq (get-set conn (str "spo" sh ph)))]
+                  (triples-sp conn si pi preds))))
             (let [preds (get-set conn (str "sp" sh))]
               (if o
                 (when oi
                   (mapcat
-                   (fn [[p objects]] (if (some #(= oh %) objects) [[si (as-node p) oi]]))
-                   (zipmap
-                    (get-many conn "pred" preds)
-                    (map #(get-set conn (str "spo" sh %)) preds))))
-                (reduce-triples conn triples-sp s sh "spo" "pred" preds)))))
+                   (fn [p objects] (if (some #(= oh %) objects) [[si (as-node p) oi]]))
+                   (get-many conn "pred" preds)
+                   (map #(get-set conn (str "spo" sh %)) preds)))
+                (triples* conn triples-sp s sh "spo" "pred" preds)))))
         (if p
           (when pi
             (if o
-              (when-let [subj (get-set conn (str "pos" ph oh))]
+              (when-let [subj (seq (get-set conn (str "pos" ph oh)))]
                 (triples-po conn pi oi subj))
-              (reduce-triples conn triples-po pi ph "pos" "obj" (get-set conn (str "po" ph)))))
+              (triples* conn triples-po pi ph "pos" "obj" (get-set conn (str "po" ph)))))
           (if o
-            (when-let [preds (get-set conn (str "op" oh))]
-              (reduce-triples conn triples-op oi oh "ops" "pred" preds))
+            (when-let [preds (seq (get-set conn (str "op" oh)))]
+              (triples* conn triples-op oi oh "ops" "pred" preds))
             (mapcat
              (fn [[sh s]]
-               (reduce-triples
+               (triples*
                 conn triples-sp (as-node s) sh "spo" "pred" (get-set conn (str "sp" sh))))
              (partition 2 (rexec conn (red/hgetall "subj"))))))))))
 
 (defn make-store
-  [& {:as opts}] (RedisStore. (merge redis-conn {:spec opts})))
+  [& {:as opts}] (RedisStore. (merge redis-conn {:spec (or opts {})})))
