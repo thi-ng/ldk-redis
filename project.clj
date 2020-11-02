@@ -5,4 +5,4 @@
             :url "http://www.eclipse.org/legal/epl-v10.html"}
   :dependencies [[org.clojure/clojure "1.5.1"]
                  [thi.ng/ldk-core "0.1.0-SNAPSHOT"]
-                 [com.taoensso/carmine "2.0.0-RC1"]])
+                 [com.taoensso/carmine "2.7.0"]])
